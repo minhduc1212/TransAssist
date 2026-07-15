@@ -28,7 +28,13 @@ export const useTranslationStore = defineStore('translation', {
     isGlossaryOpen: false,
     suggestions: {}, // segmentId -> { google, mymemory, loading }
     apiUrl: getApiUrl(),
-    rawText: ''
+    rawText: '',
+    undoStack: [],
+    redoStack: [],
+    isTyping: false,
+    typingTimeoutId: null,
+    typingSegmentId: null,
+    typingField: null
   }),
 
   getters: {
@@ -84,6 +90,10 @@ export const useTranslationStore = defineStore('translation', {
           if (data.splitMethod) this.splitMethod = data.splitMethod
           if (data.projectName) this.projectName = data.projectName
           if (data.rawText !== undefined) this.rawText = data.rawText
+          
+          this.undoStack = []
+          this.redoStack = []
+          this.stopTypingSession()
           return true
         }
       } catch (e) {
@@ -92,14 +102,123 @@ export const useTranslationStore = defineStore('translation', {
       return false
     },
 
+    // Load a project and reset history
+    loadProject(data) {
+      this.undoStack = []
+      this.redoStack = []
+      this.stopTypingSession()
+
+      this.projectName = data.projectName || 'Restored Project'
+      this.sourceLang = data.sourceLang || 'auto'
+      this.targetLang = data.targetLang || 'vi'
+      this.splitMethod = data.splitMethod || 'line'
+      this.segments = data.segments
+      if (data.glossary) this.glossary = data.glossary
+      this.rawText = data.rawText || ''
+      this.persistToLocalStorage()
+    },
+
     // Clear local storage and reset workspace
     clearWorkspace() {
+      this.recordAction()
       this.segments = []
       this.projectName = 'Untitled Document'
       this.suggestions = {}
       this.rawText = ''
       localStorage.removeItem('transassist_workspace')
     },
+
+    // --- History / Undo / Redo Actions ---
+    takeSnapshot() {
+      return {
+        segments: JSON.parse(JSON.stringify(this.segments)),
+        glossary: JSON.parse(JSON.stringify(this.glossary)),
+        sourceLang: this.sourceLang,
+        targetLang: this.targetLang,
+        splitMethod: this.splitMethod,
+        projectName: this.projectName,
+        rawText: this.rawText
+      }
+    },
+
+    recordAction() {
+      this.stopTypingSession()
+      
+      // Clear redo stack on new action
+      this.redoStack = []
+      
+      // Limit size
+      if (this.undoStack.length >= 50) {
+        this.undoStack.shift()
+      }
+      this.undoStack.push(this.takeSnapshot())
+    },
+
+    startTypingSession(segmentId, field) {
+      if (this.isTyping && (this.typingSegmentId !== segmentId || this.typingField !== field)) {
+        this.stopTypingSession()
+      }
+
+      if (!this.isTyping) {
+        this.recordAction()
+        this.isTyping = true
+        this.typingSegmentId = segmentId
+        this.typingField = field
+      }
+      
+      if (this.typingTimeoutId) {
+        clearTimeout(this.typingTimeoutId)
+      }
+      this.typingTimeoutId = setTimeout(() => {
+        this.stopTypingSession()
+      }, 1500)
+    },
+
+    stopTypingSession() {
+      if (this.isTyping) {
+        this.isTyping = false
+        if (this.typingTimeoutId) {
+          clearTimeout(this.typingTimeoutId)
+          this.typingTimeoutId = null
+        }
+        this.typingSegmentId = null
+        this.typingField = null
+      }
+    },
+
+    undo() {
+      if (this.undoStack.length > 0) {
+        this.stopTypingSession()
+        const previousState = this.undoStack.pop()
+        const currentState = this.takeSnapshot()
+        this.redoStack.push(currentState)
+        
+        this.restoreState(previousState)
+        this.persistToLocalStorage()
+      }
+    },
+
+    redo() {
+      if (this.redoStack.length > 0) {
+        const nextState = this.redoStack.pop()
+        const currentState = this.takeSnapshot()
+        this.undoStack.push(currentState)
+        
+        this.restoreState(nextState)
+        this.persistToLocalStorage()
+      }
+    },
+
+    restoreState(snapshot) {
+      this.segments = snapshot.segments
+      this.glossary = snapshot.glossary
+      this.sourceLang = snapshot.sourceLang
+      this.targetLang = snapshot.targetLang
+      this.splitMethod = snapshot.splitMethod
+      this.projectName = snapshot.projectName
+      this.rawText = snapshot.rawText
+    },
+    // --- End History Actions ---
 
     // Parse raw text via FastAPI backend
     async parseText(text, splitMethod = 'line') {
@@ -120,6 +239,7 @@ export const useTranslationStore = defineStore('translation', {
         }
 
         const data = await response.json()
+        this.recordAction() // Record action before replacing segments!
         this.rawText = text
         this.segments = data.segments
         this.splitMethod = splitMethod
@@ -135,6 +255,7 @@ export const useTranslationStore = defineStore('translation', {
     updateTranslation(segmentId, translation) {
       const idx = this.segments.findIndex(s => s.id === segmentId)
       if (idx !== -1) {
+        this.startTypingSession(segmentId, 'translation')
         this.segments[idx].translation = translation
         this.persistToLocalStorage()
       }
@@ -144,6 +265,7 @@ export const useTranslationStore = defineStore('translation', {
     updateOriginal(segmentId, original) {
       const idx = this.segments.findIndex(s => s.id === segmentId)
       if (idx !== -1) {
+        this.recordAction()
         this.segments[idx].original = original
         this.persistToLocalStorage()
       }
@@ -163,6 +285,7 @@ export const useTranslationStore = defineStore('translation', {
       const idx1 = this.segments.findIndex(s => s.id === id1)
       const idx2 = this.segments.findIndex(s => s.id === id2)
       if (idx1 !== -1 && idx2 !== -1 && idx1 !== idx2) {
+        this.recordAction()
         const seg1 = this.segments[idx1]
         const seg2 = this.segments[idx2]
         
@@ -220,6 +343,7 @@ export const useTranslationStore = defineStore('translation', {
     splitSegment(segmentId, originalLeft, originalRight, translationLeft = '', translationRight = '') {
       const idx = this.segments.findIndex(s => s.id === segmentId)
       if (idx !== -1) {
+        this.recordAction()
         const current = this.segments[idx]
         
         // Create new segment properties
@@ -250,6 +374,7 @@ export const useTranslationStore = defineStore('translation', {
     deleteSegment(segmentId) {
       const idx = this.segments.findIndex(s => s.id === segmentId)
       if (idx !== -1) {
+        this.recordAction()
         this.segments.splice(idx, 1)
         delete this.suggestions[segmentId]
         this.persistToLocalStorage()
@@ -259,6 +384,7 @@ export const useTranslationStore = defineStore('translation', {
     // Move segment order
     moveSegment(fromIdx, toIdx) {
       if (fromIdx >= 0 && fromIdx < this.segments.length && toIdx >= 0 && toIdx < this.segments.length) {
+        this.recordAction()
         const element = this.segments.splice(fromIdx, 1)[0]
         this.segments.splice(toIdx, 0, element)
         this.persistToLocalStorage()
@@ -311,8 +437,12 @@ export const useTranslationStore = defineStore('translation', {
     },
 
     // Glossary Actions
-    addGlossaryTerm(original, translation) {
+    addGlossaryTerm(original, translation, skipRecord = false) {
       if (!original.trim() || !translation.trim()) return
+      
+      if (!skipRecord) {
+        this.recordAction()
+      }
       
       const normOriginal = original.trim().toLowerCase()
       const existingIdx = this.glossary.findIndex(item => item.original.trim().toLowerCase() === normOriginal)
@@ -332,16 +462,18 @@ export const useTranslationStore = defineStore('translation', {
       const normOriginal = original.trim().toLowerCase()
       const idx = this.glossary.findIndex(item => item.original.trim().toLowerCase() === normOriginal)
       if (idx !== -1) {
+        this.recordAction()
         this.glossary.splice(idx, 1)
         this.persistToLocalStorage()
       }
     },
 
     importGlossary(list) {
-      if (Array.isArray(list)) {
+      if (Array.isArray(list) && list.length > 0) {
+        this.recordAction()
         list.forEach(item => {
           if (item.original && item.translation) {
-            this.addGlossaryTerm(item.original, item.translation)
+            this.addGlossaryTerm(item.original, item.translation, true)
           }
         })
         this.persistToLocalStorage()

@@ -29,6 +29,28 @@
           Save Backup
         </button>
 
+        <!-- Undo -->
+        <button 
+          @click="store.undo()"
+          :disabled="store.undoStack.length === 0"
+          class="border border-zinc-700 hover:border-white text-zinc-300 hover:text-white text-xxs font-bold uppercase tracking-wider px-3 py-2 transition-colors disabled:opacity-30 disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 disabled:cursor-not-allowed flex items-center gap-1.5"
+          title="Undo (Ctrl+Z)"
+        >
+          <UndoIcon class="w-3.5 h-3.5" />
+          Undo
+        </button>
+
+        <!-- Redo -->
+        <button 
+          @click="store.redo()"
+          :disabled="store.redoStack.length === 0"
+          class="border border-zinc-700 hover:border-white text-zinc-300 hover:text-white text-xxs font-bold uppercase tracking-wider px-3 py-2 transition-colors disabled:opacity-30 disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 disabled:cursor-not-allowed flex items-center gap-1.5"
+          title="Redo (Ctrl+Y / Ctrl+Shift+Z)"
+        >
+          <RedoIcon class="w-3.5 h-3.5" />
+          Redo
+        </button>
+
         <!-- Export Text -->
         <button 
           @click="exportTranslatedText"
@@ -91,15 +113,46 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useTranslationStore } from './stores/translationStore'
 import FileImport from './components/FileImport.vue'
 import Workspace from './components/Workspace.vue'
 import Glossary from './components/Glossary.vue'
-import { Languages as LanguagesIcon } from '@lucide/vue'
+import { Languages as LanguagesIcon, Undo as UndoIcon, Redo as RedoIcon } from '@lucide/vue'
 
 const store = useTranslationStore()
 const hasSavedDraft = ref(false)
+
+const handleGlobalKeyDown = (e) => {
+  if (store.segments.length === 0) return
+
+  const isCtrl = e.ctrlKey || e.metaKey
+  
+  if (isCtrl && !e.altKey) {
+    const key = e.key.toLowerCase()
+    if (key === 'z' || key === 'y') {
+      const activeEl = document.activeElement
+      const isOtherInput = activeEl && 
+        (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') && 
+        !activeEl.hasAttribute('data-workspace-input')
+        
+      if (isOtherInput) {
+        return
+      }
+      
+      e.preventDefault()
+      if (key === 'z') {
+        if (e.shiftKey) {
+          store.redo()
+        } else {
+          store.undo()
+        }
+      } else if (key === 'y') {
+        store.redo()
+      }
+    }
+  }
+}
 
 onMounted(() => {
   // Check if saved workspace draft exists
@@ -107,6 +160,12 @@ onMounted(() => {
   if (saved) {
     hasSavedDraft.value = true
   }
+  
+  window.addEventListener('keydown', handleGlobalKeyDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeyDown)
 })
 
 const onImportComplete = () => {
@@ -162,15 +221,7 @@ const loadProjectFile = (event) => {
     try {
       const data = JSON.parse(e.target.result)
       if (data.segments) {
-        store.projectName = data.projectName || 'Restored Project'
-        store.sourceLang = data.sourceLang || 'auto'
-        store.targetLang = data.targetLang || 'vi'
-        store.splitMethod = data.splitMethod || 'line'
-        store.segments = data.segments
-        if (data.glossary) store.glossary = data.glossary
-        store.rawText = data.rawText || ''
-        
-        store.persistToLocalStorage()
+        store.loadProject(data)
         alert('Project backup loaded successfully!')
       } else {
         alert('Invalid transassist project file.')

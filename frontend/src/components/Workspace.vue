@@ -79,6 +79,7 @@
             @blur="saveOriginalEdit(seg.id)"
             @keydown.ctrl.enter="saveOriginalEdit(seg.id)"
             ref="originalEditor"
+            data-workspace-input="true"
           ></textarea>
 
           <!-- Edit Original Inline Tool -->
@@ -126,6 +127,7 @@
             @input="store.updateTranslation(seg.id, seg.translation)"
             class="w-full bg-transparent border-0 border-b border-transparent focus:border-black py-1 px-0 text-sm font-sans focus:outline-none leading-relaxed transition-colors resize-y"
             placeholder="Type translation here..."
+            data-workspace-input="true"
           ></textarea>
 
           <!-- Suggestions Row (Visible when focused or if suggestion exists) -->
